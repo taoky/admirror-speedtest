@@ -2,7 +2,7 @@ use std::{
     fs::File,
     io::{BufRead, BufReader, Write},
     net,
-    process::Stdio,
+    process::Stdio, time::Instant,
 };
 
 use clap::Parser;
@@ -80,6 +80,7 @@ fn main() {
         for ip in &ips {
             // create tmp file
             let tmp_file = create_tmp(&args.tmp_dir);
+            let time_start = Instant::now();
             let output = std::process::Command::new("timeout")
                 .arg(args.timeout.to_string())
                 .arg("rsync")
@@ -91,6 +92,8 @@ fn main() {
                 .stdin(Stdio::null())
                 .output()
                 .expect("Failed to execute rsync with timeout.");
+            let duration = time_start.elapsed();
+            let duration_seconds = duration.as_secs_f64();
             log.write_all(&output.stdout).expect("Cannot write to rsync log file (stdout)");
             log.write_all(&output.stderr).expect("Cannot write to rsync log file (stderr)");
             let state_str = match output.status.code() {
@@ -107,7 +110,7 @@ fn main() {
             };
             // check file size
             let size = tmp_file.metadata().unwrap().len();
-            let bandwidth = size as f64 / args.timeout as f64; // Bytes / Seconds
+            let bandwidth = size as f64 / duration_seconds as f64; // Bytes / Seconds
             let bandwidth = bandwidth / 1024_f64; // KB/s
             println!(
                 "{} ({}): {} KB/s ({})",
