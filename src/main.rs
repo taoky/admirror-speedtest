@@ -14,11 +14,11 @@ struct Args {
     #[clap(short, long)]
     config: Option<String>,
 
-    /// Passes number. Default = 3
+    /// Passes number
     #[clap(short, long, default_value = "3")]
     pass: usize,
 
-    /// Timeout (seconds). Default = 30
+    /// Timeout (seconds)
     #[clap(short, long, default_value = "30")]
     timeout: usize,
 

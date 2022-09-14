@@ -18,8 +18,8 @@ OPTIONS:
     -c, --config <CONFIG>      Config file (IP list) path. Default to ~/.rsync-speedtest
     -h, --help                 Print help information
         --log <LOG>            Rsync log file. Default to /dev/null
-    -p, --pass <PASS>          Passes number. Default = 3 [default: 3]
-    -t, --timeout <TIMEOUT>    Timeout (seconds). Default = 30 [default: 30]
+    -p, --pass <PASS>          Passes number [default: 3]
+    -t, --timeout <TIMEOUT>    Timeout (seconds) [default: 30]
         --tmp-dir <TMP_DIR>    Tmp file path. Default to env::temp_dir() (/tmp in Linux system)
 ```
 
