@@ -93,7 +93,10 @@ fn main() {
                 .output()
                 .expect("Failed to execute rsync with timeout.");
             let duration = time_start.elapsed();
-            let duration_seconds = duration.as_secs_f64();
+            let mut duration_seconds = duration.as_secs_f64();
+            if duration_seconds > args.timeout as f64 {
+                duration_seconds = args.timeout as f64;
+            }
             log.write_all(&output.stdout).expect("Cannot write to rsync log file (stdout)");
             log.write_all(&output.stderr).expect("Cannot write to rsync log file (stderr)");
             let state_str = match output.status.code() {
