@@ -1,11 +1,13 @@
 use std::{
     fs::File,
-    io::{BufRead, BufReader, Write},
+    io::{BufRead, BufReader},
     net,
-    process::Stdio, time::Instant,
+    time::{Instant, Duration},
 };
 
 use clap::Parser;
+use subprocess::{Exec, NullFile, Redirection};
+use subprocess::ExitStatus;
 
 #[derive(Parser, Debug)]
 #[clap(about)]
@@ -50,7 +52,7 @@ fn create_tmp(tmp_dir: &Option<String>) -> mktemp::Temp {
 
 fn main() {
     let args = Args::parse();
-    let mut log = File::create(args.log.unwrap_or_else(|| "/dev/null".to_string()))
+    let log = File::create(args.log.unwrap_or_else(|| "/dev/null".to_string()))
         .expect("Cannot open rsync log file");
     // 1. read IP list from args.config
     let mut ips: Vec<Ip> = Vec::new();
@@ -81,35 +83,38 @@ fn main() {
             // create tmp file
             let tmp_file = create_tmp(&args.tmp_dir);
             let time_start = Instant::now();
-            let output = std::process::Command::new("timeout")
-                .arg(args.timeout.to_string())
-                .arg("rsync")
+            let mut rsync_popen = Exec::cmd("rsync")
                 .arg("-avP")
                 .arg("--address")
                 .arg(ip.ip.clone())
                 .arg(args.upstream.clone())
                 .arg(tmp_file.as_os_str().to_string_lossy().to_string())
-                .stdin(Stdio::null())
-                .output()
-                .expect("Failed to execute rsync with timeout.");
+                .stdin(NullFile)
+                .stdout(log.try_clone().expect("Clone log file descriptor failed"))
+                .stderr(Redirection::Merge)
+                .popen()
+                .expect("Failed to create rsync Popen object");
+            let status = rsync_popen.wait_timeout(Duration::new(args.timeout as u64, 0)).expect("rsync timeout");
+            if status.is_none() {
+                rsync_popen.kill().expect("rsync kill failed");
+                rsync_popen.wait().expect("rsync wait failed");
+            }
             let duration = time_start.elapsed();
             let mut duration_seconds = duration.as_secs_f64();
             if duration_seconds > args.timeout as f64 {
                 duration_seconds = args.timeout as f64;
             }
-            log.write_all(&output.stdout).expect("Cannot write to rsync log file (stdout)");
-            log.write_all(&output.stderr).expect("Cannot write to rsync log file (stderr)");
-            let state_str = match output.status.code() {
-                Some(code) => match code {
-                    0 => "✅ OK".to_owned(),
-                    124 => "✅ Rsync timeout as expected".to_owned(),
-                    125 => "❌ 'timeout' program failed".to_owned(),
-                    126 => "❌ Cannot start rsync".to_owned(),
-                    127 => "❌ 'rsync' program cannot be found".to_owned(),
-                    137 => "❌ Being SIGKILLed".to_owned(),
-                    _ => format!("❌ Rsync failed with code {}", code),
+            let state_str = match status {
+                Some(status) => {
+                    match status {
+                        ExitStatus::Exited(0) => "✅ OK".to_owned(),
+                        ExitStatus::Exited(code) => format!("❌ Exited with code {}", code),
+                        ExitStatus::Signaled(signal) => format!("❌ Signaled with signal {}", signal),
+                        ExitStatus::Other(code) => format!("❌ Other exit code {}", code),
+                        ExitStatus::Undetermined => "❌ Unknown error".to_owned(),
+                    }
                 },
-                None => "❌ Rsync killed by signal".to_owned(),
+                None => "✅ Rsync timeout as expected".to_owned(),
             };
             // check file size
             let size = tmp_file.metadata().unwrap().len();
