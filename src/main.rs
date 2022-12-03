@@ -2,7 +2,12 @@ use std::{
     fs::File,
     io::{BufRead, BufReader},
     net,
-    process::Stdio, time::Instant, sync::{atomic::{AtomicBool, Ordering}, Arc},
+    process::Stdio,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    time::Instant,
 };
 
 use clap::Parser;
@@ -55,7 +60,8 @@ fn main() {
         .expect("Cannot open rsync log file");
     let term = Arc::new(AtomicBool::new(false));
     signal_hook::flag::register(SIGINT, Arc::clone(&term)).expect("Register SIGINT handler failed");
-    signal_hook::flag::register(SIGTERM, Arc::clone(&term)).expect("Register SIGTERM handler failed");
+    signal_hook::flag::register(SIGTERM, Arc::clone(&term))
+        .expect("Register SIGTERM handler failed");
     // 1. read IP list from args.config
     let mut ips: Vec<Ip> = Vec::new();
     let config_path = args.config.unwrap_or_else(|| {
@@ -101,8 +107,14 @@ fn main() {
                 .arg(args.upstream.clone())
                 .arg(tmp_file.as_os_str().to_string_lossy().to_string())
                 .stdin(Stdio::null())
-                .stdout(Stdio::from(log.try_clone().expect("Clone log file descriptor failed (stdout)")))
-                .stderr(Stdio::from(log.try_clone().expect("Clone log file descriptor failed (stderr)")))
+                .stdout(Stdio::from(
+                    log.try_clone()
+                        .expect("Clone log file descriptor failed (stdout)"),
+                ))
+                .stderr(Stdio::from(
+                    log.try_clone()
+                        .expect("Clone log file descriptor failed (stderr)"),
+                ))
                 .spawn()
                 .expect("Failed to spawn rsync with timeout.");
             let status = proc.wait().expect("Wait for rsync failed");
