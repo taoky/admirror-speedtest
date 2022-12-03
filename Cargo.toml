@@ -10,3 +10,4 @@ description = "Test speed (bandwidth) of different bind IP to rsync upstream"
 clap = { version = "3.2.20", features = ["derive"] }
 dirs = "4.0.0"
 mktemp = "0.4.1"
+signal-hook = "0.3.14"

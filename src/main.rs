@@ -2,10 +2,11 @@ use std::{
     fs::File,
     io::{BufRead, BufReader},
     net,
-    process::Stdio, time::Instant,
+    process::Stdio, time::Instant, sync::{atomic::{AtomicBool, Ordering}, Arc},
 };
 
 use clap::Parser;
+use signal_hook::consts::{SIGINT, SIGTERM};
 
 #[derive(Parser, Debug)]
 #[clap(about)]
@@ -52,6 +53,9 @@ fn main() {
     let args = Args::parse();
     let log = File::create(args.log.unwrap_or_else(|| "/dev/null".to_string()))
         .expect("Cannot open rsync log file");
+    let term = Arc::new(AtomicBool::new(false));
+    signal_hook::flag::register(SIGINT, Arc::clone(&term)).expect("Register SIGINT handler failed");
+    signal_hook::flag::register(SIGTERM, Arc::clone(&term)).expect("Register SIGTERM handler failed");
     // 1. read IP list from args.config
     let mut ips: Vec<Ip> = Vec::new();
     let config_path = args.config.unwrap_or_else(|| {
@@ -78,10 +82,17 @@ fn main() {
     for pass in 0..args.pass {
         println!("Pass {}:", pass);
         for ip in &ips {
+            if term.load(Ordering::SeqCst) {
+                println!("Terminated by user.");
+                // return instead of directly exit() so we can clean up tmp files
+                return;
+            }
             // create tmp file
             let tmp_file = create_tmp(&args.tmp_dir);
             let time_start = Instant::now();
             let mut proc = std::process::Command::new("timeout")
+                .arg("--foreground")
+                .arg("--kill-after=5")
                 .arg(args.timeout.to_string())
                 .arg("rsync")
                 .arg("-avP")
@@ -100,7 +111,7 @@ fn main() {
             if duration_seconds > args.timeout as f64 {
                 duration_seconds = args.timeout as f64;
             }
-            let state_str = match status.code() {
+            let mut state_str = match status.code() {
                 Some(code) => match code {
                     0 => "✅ OK".to_owned(),
                     124 => "✅ Rsync timeout as expected".to_owned(),
@@ -112,6 +123,9 @@ fn main() {
                 },
                 None => "❌ Rsync killed by signal".to_owned(),
             };
+            if term.load(Ordering::SeqCst) {
+                state_str += " (terminated by user)";
+            }
             // check file size
             let size = tmp_file.metadata().unwrap().len();
             let bandwidth = size as f64 / duration_seconds as f64; // Bytes / Seconds
