@@ -13,7 +13,6 @@ use std::{
 };
 
 use clap::Parser;
-use libc::SIGKILL;
 use signal_hook::consts::{SIGINT, SIGTERM};
 
 #[derive(Parser, Debug)]
@@ -62,33 +61,7 @@ struct RsyncStatus {
     time: Duration,
 }
 
-fn kill_rsync_group(proc: &mut process::Child) -> ExitStatus {
-    // Soundness requirement: the latest try_wait() should return Ok(None)
-    // Elsewhere libc::kill may kill unrelated processes
-
-    // Assuming that rsync can handle its child processes
-    unsafe {
-        libc::kill(proc.id() as i32, SIGTERM);
-    }
-
-    // wait for 5 secs, see if it's dead
-    let start = Instant::now();
-    let delay = Duration::from_millis(100);
-    while start.elapsed() < Duration::from_secs(5) {
-        if let Ok(Some(status)) = proc.try_wait() {
-            // here we believe that rsync has handled its child processes
-            return status;
-        }
-        std::thread::sleep(delay);
-    }
-    // Sorry, it's still alive, kill them all
-    println!("Forcefully killing rsync process group (exceeded 5 sec timeout), the result maybe incorrect.");
-    unsafe {
-        libc::killpg(proc.id() as i32, SIGKILL);
-    }
-    let status = proc.wait().expect("wait failed");
-
-    // reap all children
+fn reap_all_children() {
     loop {
         unsafe {
             if libc::waitpid(-1, std::ptr::null_mut(), libc::WNOHANG) < 0 {
@@ -96,9 +69,30 @@ fn kill_rsync_group(proc: &mut process::Child) -> ExitStatus {
             }
         }
     }
-    println!("Rsync process group killed");
+}
 
-    status
+fn kill_rsync(proc: &mut process::Child) -> ExitStatus {
+    // Soundness requirement: the latest try_wait() should return Ok(None)
+    // Elsewhere libc::kill may kill unrelated processes
+
+    // rsync process model: we spawn "generator", and after receiving "file list"
+    // generator spawns "receiver".
+    // A race condition bug of rsync will cause receiver to hang for a long time
+    // when both generator and receiver get SIGTERM/SIGINT/SIGHUP.
+    // (See https://github.com/WayneD/rsync/issues/413 I posted)
+    // So we just SIGTERM "generator", and let generator to SIGUSR1 receiver
+    // and hoping that it will work
+    // and well, I think that std::process::Child really should get a terminate() method!
+    unsafe {
+        libc::kill(proc.id() as i32, SIGTERM);
+    }
+
+    let res = proc.wait().expect("rsync wait failed");
+    // if receiver deads before generator, the SIGCHLD handler of generator will help reap it
+    // but we cannot rely on race condition to help do things right
+    reap_all_children();
+
+    res
 }
 
 fn wait_timeout(mut proc: process::Child, timeout: Duration, term: Arc<AtomicBool>) -> RsyncStatus {
@@ -125,14 +119,14 @@ fn wait_timeout(mut proc: process::Child, timeout: Duration, term: Arc<AtomicBoo
             None => {
                 if term.load(Ordering::SeqCst) {
                     let time = start.elapsed();
-                    let status = kill_rsync_group(&mut proc);
+                    let status = kill_rsync(&mut proc);
                     return RsyncStatus { status, time };
                 }
 
                 let now = Instant::now();
                 if now >= deadline {
                     let time = start.elapsed();
-                    let status = kill_rsync_group(&mut proc);
+                    let status = kill_rsync(&mut proc);
                     return RsyncStatus { status, time };
                 }
 
@@ -187,6 +181,7 @@ fn main() {
             let tmp_file = create_tmp(&args.tmp_dir);
             let proc = std::process::Command::new("rsync")
                 .arg("-avP")
+                .arg("--inplace")
                 .arg("--address")
                 .arg(ip.ip.clone())
                 .arg(args.upstream.clone())
@@ -200,7 +195,7 @@ fn main() {
                     log.try_clone()
                         .expect("Clone log file descriptor failed (stderr)"),
                 ))
-                .process_group(0)  // Don't let rsync receive SIGINT from tty: we handle it ourselves
+                .process_group(0) // Don't let rsync receive SIGINT from tty: we handle it ourselves
                 .spawn()
                 .expect("Failed to spawn rsync with timeout.");
             let rsync_status =
