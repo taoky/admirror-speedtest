@@ -134,9 +134,9 @@ dependencies = [
 
 [[package]]
 name = "libc"
-version = "0.2.132"
+version = "0.2.138"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8371e4e5341c3a96db127eb2465ac681ced4c433e01dd0e938adbef26ba93ba5"
+checksum = "db6d7e329c562c5dfab7a46a2afabc8b987ab9a4834c9d1ca04dc54c1546cef8"
 
 [[package]]
 name = "mktemp"
@@ -223,10 +223,11 @@ dependencies = [
 
 [[package]]
 name = "rsync-speedtest"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "clap",
  "dirs",
+ "libc",
  "mktemp",
  "signal-hook",
 ]

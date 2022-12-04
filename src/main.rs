@@ -1,20 +1,22 @@
 use std::{
+    cmp::min,
     fs::File,
     io::{BufRead, BufReader},
     net,
-    process::Stdio,
+    process::{self, ExitStatus, Stdio},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
     },
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use clap::Parser;
+use libc::SIGKILL;
 use signal_hook::consts::{SIGINT, SIGTERM};
 
 #[derive(Parser, Debug)]
-#[clap(about)]
+#[clap(about, version)]
 struct Args {
     /// Config file (IP list) path. Default to ~/.rsync-speedtest
     #[clap(short, long)]
@@ -52,6 +54,95 @@ fn create_tmp(tmp_dir: &Option<String>) -> mktemp::Temp {
         None => mktemp::Temp::new_file(),
     }
     .expect("tmp file created failed")
+}
+
+struct RsyncStatus {
+    status: ExitStatus,
+    time: Duration,
+}
+
+fn kill_rsync_group(proc: &mut process::Child, sigterm: bool) -> ExitStatus {
+    // Soundness requirement: the latest try_wait() should return Ok(None)
+    // Elsewhere libc::kill may kill unrelated processes
+    if sigterm {
+        // Assuming that rsync can handle its child processes
+        unsafe {
+            libc::kill(proc.id() as i32, SIGTERM);
+        }
+    }
+
+    // wait for 5 secs, see if it's dead
+    let start = Instant::now();
+    let delay = Duration::from_millis(100);
+    while start.elapsed() < Duration::from_secs(5) {
+        if let Ok(Some(status)) = proc.try_wait() {
+            // here we believe that rsync has handled its child processes
+            return status;
+        }
+        std::thread::sleep(delay);
+    }
+    // Sorry, it's still alive, kill them all
+    println!("Forcefully killing rsync process (5 sec timeout), the result maybe incorrect.");
+    unsafe {
+        libc::killpg(proc.id() as i32, SIGKILL);
+    }
+    let status = proc.wait().expect("wait failed");
+
+    // reap all children
+    loop {
+        unsafe {
+            if libc::waitpid(-1, std::ptr::null_mut(), libc::WNOHANG) < 0 {
+                break;
+            }
+        }
+    }
+
+    status
+}
+
+fn wait_timeout(mut proc: process::Child, timeout: Duration, term: Arc<AtomicBool>) -> RsyncStatus {
+    // Reference adaptable timeout algorithm from
+    // https://github.com/hniksic/rust-subprocess/blob/5e89ac093f378bcfc03c69bdb1b4bcacf4313ce4/src/popen.rs#L778
+    // Licnesed under MIT & Apache-2.0
+
+    let start = Instant::now();
+    let deadline = start + timeout;
+
+    let mut delay = Duration::from_millis(1);
+
+    loop {
+        let status = proc
+            .try_wait()
+            .expect("try waiting for rsync process failed");
+        match status {
+            Some(status) => {
+                return RsyncStatus {
+                    status,
+                    time: start.elapsed(),
+                }
+            }
+            None => {
+                if term.load(Ordering::SeqCst) {
+                    // When user press Ctrl + C, rsync process will also receive SIGINT
+                    // So we should not send SIGTERM again
+                    let time = start.elapsed();
+                    let status = kill_rsync_group(&mut proc, false);
+                    return RsyncStatus { status, time };
+                }
+
+                let now = Instant::now();
+                if now >= deadline {
+                    let time = start.elapsed();
+                    let status = kill_rsync_group(&mut proc, true);
+                    return RsyncStatus { status, time };
+                }
+
+                let remaining = deadline.duration_since(now);
+                std::thread::sleep(min(delay, remaining));
+                delay = min(delay * 2, Duration::from_millis(100));
+            }
+        }
+    }
 }
 
 fn main() {
@@ -95,12 +186,7 @@ fn main() {
             }
             // create tmp file
             let tmp_file = create_tmp(&args.tmp_dir);
-            let time_start = Instant::now();
-            let mut proc = std::process::Command::new("timeout")
-                .arg("--foreground")
-                .arg("--kill-after=5")
-                .arg(args.timeout.to_string())
-                .arg("rsync")
+            let proc = std::process::Command::new("rsync")
                 .arg("-avP")
                 .arg("--address")
                 .arg(ip.ip.clone())
@@ -117,23 +203,23 @@ fn main() {
                 ))
                 .spawn()
                 .expect("Failed to spawn rsync with timeout.");
-            let status = proc.wait().expect("Wait for rsync failed");
-            let duration = time_start.elapsed();
-            let mut duration_seconds = duration.as_secs_f64();
-            if duration_seconds > args.timeout as f64 {
-                duration_seconds = args.timeout as f64;
-            }
-            let mut state_str = match status.code() {
-                Some(code) => match code {
-                    0 => "✅ OK".to_owned(),
-                    124 => "✅ Rsync timeout as expected".to_owned(),
-                    125 => "❌ 'timeout' program failed".to_owned(),
-                    126 => "❌ Cannot start rsync".to_owned(),
-                    127 => "❌ 'rsync' program cannot be found".to_owned(),
-                    137 => "❌ Being SIGKILLed".to_owned(),
-                    _ => format!("❌ Rsync failed with code {}", code),
-                },
-                None => "❌ Rsync killed by signal".to_owned(),
+            let rsync_status =
+                wait_timeout(proc, Duration::from_secs(args.timeout as u64), term.clone());
+            let status = rsync_status.status;
+            let duration = rsync_status.time;
+            let duration_seconds = duration.as_secs_f64();
+            let mut state_str = {
+                if duration_seconds > args.timeout as f64 {
+                    "✅ Rsync timeout as expected".to_owned()
+                } else {
+                    match status.code() {
+                        Some(code) => match code {
+                            0 => "✅ OK".to_owned(),
+                            _ => format!("❌ Rsync failed with code {}", code),
+                        },
+                        None => "❌ Rsync killed by signal".to_owned(),
+                    }
+                }
             };
             if term.load(Ordering::SeqCst) {
                 state_str += " (terminated by user)";
