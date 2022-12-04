@@ -3,6 +3,7 @@ use std::{
     fs::File,
     io::{BufRead, BufReader},
     net,
+    os::unix::process::CommandExt,
     process::{self, ExitStatus, Stdio},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -61,14 +62,13 @@ struct RsyncStatus {
     time: Duration,
 }
 
-fn kill_rsync_group(proc: &mut process::Child, sigterm: bool) -> ExitStatus {
+fn kill_rsync_group(proc: &mut process::Child) -> ExitStatus {
     // Soundness requirement: the latest try_wait() should return Ok(None)
     // Elsewhere libc::kill may kill unrelated processes
-    if sigterm {
-        // Assuming that rsync can handle its child processes
-        unsafe {
-            libc::kill(proc.id() as i32, SIGTERM);
-        }
+
+    // Assuming that rsync can handle its child processes
+    unsafe {
+        libc::kill(proc.id() as i32, SIGTERM);
     }
 
     // wait for 5 secs, see if it's dead
@@ -82,7 +82,7 @@ fn kill_rsync_group(proc: &mut process::Child, sigterm: bool) -> ExitStatus {
         std::thread::sleep(delay);
     }
     // Sorry, it's still alive, kill them all
-    println!("Forcefully killing rsync process (5 sec timeout), the result maybe incorrect.");
+    println!("Forcefully killing rsync process group (exceeded 5 sec timeout), the result maybe incorrect.");
     unsafe {
         libc::killpg(proc.id() as i32, SIGKILL);
     }
@@ -96,6 +96,7 @@ fn kill_rsync_group(proc: &mut process::Child, sigterm: bool) -> ExitStatus {
             }
         }
     }
+    println!("Rsync process group killed");
 
     status
 }
@@ -123,17 +124,15 @@ fn wait_timeout(mut proc: process::Child, timeout: Duration, term: Arc<AtomicBoo
             }
             None => {
                 if term.load(Ordering::SeqCst) {
-                    // When user press Ctrl + C, rsync process will also receive SIGINT
-                    // So we should not send SIGTERM again
                     let time = start.elapsed();
-                    let status = kill_rsync_group(&mut proc, false);
+                    let status = kill_rsync_group(&mut proc);
                     return RsyncStatus { status, time };
                 }
 
                 let now = Instant::now();
                 if now >= deadline {
                     let time = start.elapsed();
-                    let status = kill_rsync_group(&mut proc, true);
+                    let status = kill_rsync_group(&mut proc);
                     return RsyncStatus { status, time };
                 }
 
@@ -201,6 +200,7 @@ fn main() {
                     log.try_clone()
                         .expect("Clone log file descriptor failed (stderr)"),
                 ))
+                .process_group(0)  // Don't let rsync receive SIGINT from tty: we handle it ourselves
                 .spawn()
                 .expect("Failed to spawn rsync with timeout.");
             let rsync_status =
