@@ -80,7 +80,8 @@ fn kill_rsync(proc: &mut process::Child) -> ExitStatus {
     // A race condition bug of rsync will cause receiver to hang for a long time
     // when both generator and receiver get SIGTERM/SIGINT/SIGHUP.
     // (See https://github.com/WayneD/rsync/issues/413 I posted)
-    // So we just SIGTERM "generator", and let generator to SIGUSR1 receiver
+    // So we seperate rsync from rsync-speedtest process group,
+    // and just SIGTERM "generator" here, and let generator to SIGUSR1 receiver
     // and hoping that it will work
     // and well, I think that std::process::Child really should get a terminate() method!
     unsafe {
@@ -88,7 +89,7 @@ fn kill_rsync(proc: &mut process::Child) -> ExitStatus {
     }
 
     let res = proc.wait().expect("rsync wait failed");
-    // if receiver deads before generator, the SIGCHLD handler of generator will help reap it
+    // if receiver died before generator, the SIGCHLD handler of generator will help reap it
     // but we cannot rely on race condition to help do things right
     reap_all_children();
 

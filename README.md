@@ -1,6 +1,8 @@
 # rsync-speedtest
 A simple rsync speedtest program for multiple-IPs (ISP) environment, to optimize the speed of syncing from upstream.
 
+There's a racing bug in rsync that prevents proper termination of rsync processes, and it has been workarounded in rsync-speedtest. See comments of `kill_rsync()` in main.rs for details.
+
 ## Args
 
 ```
