@@ -99,7 +99,7 @@ fn kill_rsync(proc: &mut process::Child) -> ExitStatus {
 fn wait_timeout(mut proc: process::Child, timeout: Duration, term: Arc<AtomicBool>) -> RsyncStatus {
     // Reference adaptable timeout algorithm from
     // https://github.com/hniksic/rust-subprocess/blob/5e89ac093f378bcfc03c69bdb1b4bcacf4313ce4/src/popen.rs#L778
-    // Licnesed under MIT & Apache-2.0
+    // Licensed under MIT & Apache-2.0
 
     let start = Instant::now();
     let deadline = start + timeout;
