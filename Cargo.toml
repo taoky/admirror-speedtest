@@ -1,8 +1,8 @@
 [package]
-name = "rsync-speedtest"
-version = "0.2.0"
+name = "admirror-speedtest"
+version = "0.3.0"
 edition = "2021"
-description = "Test speed (bandwidth) of different bind IP to rsync upstream"
+description = "Test speed (bandwidth) of different bind IP to rsync, http(s) and git upstream. Alleviate mirror site admin's trouble choosing fastest bind IP."
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

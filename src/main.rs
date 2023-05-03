@@ -1,10 +1,11 @@
+mod spawner;
+
 use std::{
     cmp::min,
     fs::File,
     io::{BufRead, BufReader},
     net,
-    os::unix::process::CommandExt,
-    process::{self, ExitStatus, Stdio},
+    process::{self, ExitStatus},
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -12,13 +13,23 @@ use std::{
     time::{Duration, Instant},
 };
 
-use clap::Parser;
+use clap::{clap_derive::ArgEnum, Parser};
 use signal_hook::consts::{SIGINT, SIGTERM};
+
+use crate::spawner::{get_child, get_program_name};
+
+#[derive(Debug, ArgEnum, Clone, Copy)]
+pub enum Program {
+    Rsync,
+    Wget,
+    Curl,
+    Git,
+}
 
 #[derive(Parser, Debug)]
 #[clap(about, version)]
 struct Args {
-    /// Config file (IP list) path. Default to ~/.rsync-speedtest
+    /// Config file (IP list) path. Default to ~/.admirror-speedtest or (if not exist) ~/.rsync-speedtest
     #[clap(short, long)]
     config: Option<String>,
 
@@ -34,13 +45,17 @@ struct Args {
     #[clap(long)]
     tmp_dir: Option<String>,
 
-    /// Rsync log file. Default to /dev/null
+    /// Log file. Default to /dev/null
     #[clap(long)]
     log: Option<String>,
 
-    /// Upstream path. Will be given to rsync
+    /// Upstream path. Will be given to specified program
     #[clap(value_parser)]
     upstream: String,
+
+    /// Program to use. It will try to detect by default (here curl will be used default for http(s))
+    #[clap(long, arg_enum)]
+    program: Option<Program>,
 }
 
 struct Ip {
@@ -56,7 +71,7 @@ fn create_tmp(tmp_dir: &Option<String>) -> mktemp::Temp {
     .expect("tmp file created failed")
 }
 
-struct RsyncStatus {
+struct ProgramStatus {
     status: ExitStatus,
     time: Duration,
 }
@@ -71,7 +86,7 @@ fn reap_all_children() {
     }
 }
 
-fn kill_rsync(proc: &mut process::Child) -> ExitStatus {
+fn kill_children(proc: &mut process::Child) -> ExitStatus {
     // Soundness requirement: the latest try_wait() should return Ok(None)
     // Elsewhere libc::kill may kill unrelated processes
 
@@ -88,7 +103,7 @@ fn kill_rsync(proc: &mut process::Child) -> ExitStatus {
         libc::kill(proc.id() as i32, SIGTERM);
     }
 
-    let res = proc.wait().expect("rsync wait failed");
+    let res = proc.wait().expect("program wait() failed");
     // if receiver died before generator, the SIGCHLD handler of generator will help reap it
     // but we cannot rely on race condition to help do things right
     reap_all_children();
@@ -96,7 +111,11 @@ fn kill_rsync(proc: &mut process::Child) -> ExitStatus {
     res
 }
 
-fn wait_timeout(mut proc: process::Child, timeout: Duration, term: Arc<AtomicBool>) -> RsyncStatus {
+fn wait_timeout(
+    mut proc: process::Child,
+    timeout: Duration,
+    term: Arc<AtomicBool>,
+) -> ProgramStatus {
     // Reference adaptable timeout algorithm from
     // https://github.com/hniksic/rust-subprocess/blob/5e89ac093f378bcfc03c69bdb1b4bcacf4313ce4/src/popen.rs#L778
     // Licensed under MIT & Apache-2.0
@@ -112,7 +131,7 @@ fn wait_timeout(mut proc: process::Child, timeout: Duration, term: Arc<AtomicBoo
             .expect("try waiting for rsync process failed");
         match status {
             Some(status) => {
-                return RsyncStatus {
+                return ProgramStatus {
                     status,
                     time: start.elapsed(),
                 }
@@ -120,15 +139,15 @@ fn wait_timeout(mut proc: process::Child, timeout: Duration, term: Arc<AtomicBoo
             None => {
                 if term.load(Ordering::SeqCst) {
                     let time = start.elapsed();
-                    let status = kill_rsync(&mut proc);
-                    return RsyncStatus { status, time };
+                    let status = kill_children(&mut proc);
+                    return ProgramStatus { status, time };
                 }
 
                 let now = Instant::now();
                 if now >= deadline {
                     let time = start.elapsed();
-                    let status = kill_rsync(&mut proc);
-                    return RsyncStatus { status, time };
+                    let status = kill_children(&mut proc);
+                    return ProgramStatus { status, time };
                 }
 
                 let remaining = deadline.duration_since(now);
@@ -142,19 +161,41 @@ fn wait_timeout(mut proc: process::Child, timeout: Duration, term: Arc<AtomicBoo
 fn main() {
     let args = Args::parse();
     let log = File::create(args.log.unwrap_or_else(|| "/dev/null".to_string()))
-        .expect("Cannot open rsync log file");
+        .expect("Cannot open log file");
     let term = Arc::new(AtomicBool::new(false));
     signal_hook::flag::register(SIGINT, Arc::clone(&term)).expect("Register SIGINT handler failed");
     signal_hook::flag::register(SIGTERM, Arc::clone(&term))
         .expect("Register SIGTERM handler failed");
+
     // 1. read IP list from args.config
     let mut ips: Vec<Ip> = Vec::new();
-    let config_path = args.config.unwrap_or_else(|| {
+    let config_path = args.config.clone().unwrap_or_else(|| {
         let mut path = dirs::home_dir().unwrap();
-        path.push(".rsync-speedtest");
+        path.push(".admirror-speedtest");
         path.to_str().unwrap().to_string()
     });
-    let ips_file = File::open(config_path).expect("Cannot open IP list file.");
+    let mut config_paths = vec![config_path];
+    if args.config.is_none() {
+        // Add .rsync-speedtest for backward compatibility
+        let mut path = dirs::home_dir().unwrap();
+        path.push(".rsync-speedtest");
+        config_paths.push(path.to_str().unwrap().to_string());
+    }
+
+    let mut ips_file = None;
+    for config in config_paths {
+        if let Ok(file) = File::open(&config) {
+            ips_file = Some(file);
+            break;
+        }
+    }
+    let ips_file = match ips_file {
+        Some(ips_file) => ips_file,
+        None => {
+            panic!("Cannot open IP list file.")
+        }
+    };
+
     let iterator = BufReader::new(ips_file).lines();
     for line in iterator {
         let line = line.unwrap();
@@ -169,7 +210,30 @@ fn main() {
             comment: comment.to_string(),
         });
     }
-    // 2. run rsync for passes times and collect results
+    // 2. Detect which program should we run
+    let program = match args.program {
+        Some(program) => program,
+        None => {
+            // We need to detect by upstream
+
+            // Though I don't think anyone will use ALL UPPERCASE here...
+            let upstream = args.upstream.to_lowercase();
+            if upstream.starts_with("rsync://") || upstream.contains("::") {
+                Program::Rsync
+            } else if upstream.starts_with("http://") || upstream.starts_with("https://") {
+                if upstream.ends_with(".git") {
+                    Program::Git
+                } else {
+                    Program::Curl
+                }
+            } else if upstream.starts_with("git://") {
+                Program::Git
+            } else {
+                panic!("Cannot detect upstream program. Please specify with --program.")
+            }
+        }
+    };
+    // 3. run rsync for passes times and collect results
     for pass in 0..args.pass {
         println!("Pass {}:", pass);
         for ip in &ips {
@@ -180,25 +244,7 @@ fn main() {
             }
             // create tmp file
             let tmp_file = create_tmp(&args.tmp_dir);
-            let proc = std::process::Command::new("rsync")
-                .arg("-avP")
-                .arg("--inplace")
-                .arg("--address")
-                .arg(ip.ip.clone())
-                .arg(args.upstream.clone())
-                .arg(tmp_file.as_os_str().to_string_lossy().to_string())
-                .stdin(Stdio::null())
-                .stdout(Stdio::from(
-                    log.try_clone()
-                        .expect("Clone log file descriptor failed (stdout)"),
-                ))
-                .stderr(Stdio::from(
-                    log.try_clone()
-                        .expect("Clone log file descriptor failed (stderr)"),
-                ))
-                .process_group(0) // Don't let rsync receive SIGINT from tty: we handle it ourselves
-                .spawn()
-                .expect("Failed to spawn rsync with timeout.");
+            let proc = get_child(&program, &ip.ip, &args.upstream, &tmp_file, &log);
             let rsync_status =
                 wait_timeout(proc, Duration::from_secs(args.timeout as u64), term.clone());
             let status = rsync_status.status;
@@ -206,14 +252,18 @@ fn main() {
             let duration_seconds = duration.as_secs_f64();
             let mut state_str = {
                 if duration_seconds > args.timeout as f64 {
-                    "✅ Rsync timeout as expected".to_owned()
+                    format!("✅ {} timeout as expected", get_program_name(&program))
                 } else {
                     match status.code() {
                         Some(code) => match code {
                             0 => "✅ OK".to_owned(),
-                            _ => format!("❌ Rsync failed with code {}", code),
+                            _ => format!(
+                                "❌ {} failed with code {}",
+                                get_program_name(&program),
+                                code
+                            ),
                         },
-                        None => "❌ Rsync killed by signal".to_owned(),
+                        None => format!("❌ {} killed by signal", get_program_name(&program)),
                     }
                 }
             };
@@ -222,7 +272,7 @@ fn main() {
             }
             // check file size
             let size = tmp_file.metadata().unwrap().len();
-            let bandwidth = size as f64 / duration_seconds as f64; // Bytes / Seconds
+            let bandwidth = size as f64 / duration_seconds; // Bytes / Seconds
             let bandwidth = bandwidth / 1024_f64; // KB/s
             println!(
                 "{} ({}): {} KB/s ({})",
