@@ -222,6 +222,9 @@ fn main() {
     let iterator = BufReader::new(ips_file).lines();
     for line in iterator {
         let line = line.unwrap();
+        if line.starts_with('#') {
+            continue;
+        }
         let line: Vec<&str> = line.split(' ').collect();
         assert!(line.len() <= 2);
         let ip = line[0];
