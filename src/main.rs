@@ -5,6 +5,7 @@ use std::{
     fs::File,
     io::{BufRead, BufReader},
     net,
+    path::Path,
     process::{self, ExitStatus},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -14,11 +15,12 @@ use std::{
 };
 
 use clap::{clap_derive::ArgEnum, Parser};
+use libc::SIGKILL;
 use signal_hook::consts::{SIGINT, SIGTERM};
 
 use crate::spawner::{get_child, get_program_name};
 
-#[derive(Debug, ArgEnum, Clone, Copy)]
+#[derive(Debug, ArgEnum, Clone, Copy, PartialEq)]
 pub enum Program {
     Rsync,
     Wget,
@@ -63,7 +65,7 @@ struct Ip {
     comment: String,
 }
 
-fn create_tmp(tmp_dir: &Option<String>) -> mktemp::Temp {
+fn create_tmp_file(tmp_dir: &Option<String>) -> mktemp::Temp {
     match tmp_dir {
         Some(tmp_dir) => mktemp::Temp::new_file_in(tmp_dir),
         None => mktemp::Temp::new_file(),
@@ -71,9 +73,22 @@ fn create_tmp(tmp_dir: &Option<String>) -> mktemp::Temp {
     .expect("tmp file created failed")
 }
 
+fn create_tmp_dir(tmp_dir: &Option<String>) -> mktemp::Temp {
+    match tmp_dir {
+        Some(tmp_dir) => mktemp::Temp::new_dir_in(tmp_dir),
+        None => mktemp::Temp::new_dir(),
+    }
+    .expect("tmp dir created failed")
+}
+
 struct ProgramStatus {
     status: ExitStatus,
     time: Duration,
+}
+
+pub struct ProgramChild {
+    child: process::Child,
+    program: Program,
 }
 
 fn reap_all_children() {
@@ -86,7 +101,7 @@ fn reap_all_children() {
     }
 }
 
-fn kill_children(proc: &mut process::Child) -> ExitStatus {
+fn kill_children(proc: &mut ProgramChild) -> ExitStatus {
     // Soundness requirement: the latest try_wait() should return Ok(None)
     // Elsewhere libc::kill may kill unrelated processes
 
@@ -99,11 +114,22 @@ fn kill_children(proc: &mut process::Child) -> ExitStatus {
     // and just SIGTERM "generator" here, and let generator to SIGUSR1 receiver
     // and hoping that it will work
     // and well, I think that std::process::Child really should get a terminate() method!
-    unsafe {
-        libc::kill(proc.id() as i32, SIGTERM);
+
+    // git process model: git spawns some git-remote-https (for example) to do the networking work
+    // and when getting SIGTERM, etc., git will do cleanup job and we cannot get actual data afterwards
+    // So we have to kill the whole process group with the crudest way
+    if proc.program != Program::Git {
+        unsafe {
+            libc::kill(proc.child.id() as i32, SIGTERM);
+        }
+    } else {
+        unsafe {
+            // SIGKILL the whole process group to cleanup git-remote-*
+            libc::killpg(proc.child.id() as i32, SIGKILL);
+        }
     }
 
-    let res = proc.wait().expect("program wait() failed");
+    let res = proc.child.wait().expect("program wait() failed");
     // if receiver died before generator, the SIGCHLD handler of generator will help reap it
     // but we cannot rely on race condition to help do things right
     reap_all_children();
@@ -111,11 +137,7 @@ fn kill_children(proc: &mut process::Child) -> ExitStatus {
     res
 }
 
-fn wait_timeout(
-    mut proc: process::Child,
-    timeout: Duration,
-    term: Arc<AtomicBool>,
-) -> ProgramStatus {
+fn wait_timeout(mut proc: ProgramChild, timeout: Duration, term: Arc<AtomicBool>) -> ProgramStatus {
     // Reference adaptable timeout algorithm from
     // https://github.com/hniksic/rust-subprocess/blob/5e89ac093f378bcfc03c69bdb1b4bcacf4313ce4/src/popen.rs#L778
     // Licensed under MIT & Apache-2.0
@@ -127,8 +149,9 @@ fn wait_timeout(
 
     loop {
         let status = proc
+            .child
             .try_wait()
-            .expect("try waiting for rsync process failed");
+            .expect("try waiting for child process failed");
         match status {
             Some(status) => {
                 return ProgramStatus {
@@ -233,6 +256,56 @@ fn main() {
             }
         }
     };
+
+    let binder_path = if program == Program::Git {
+        // Check if libbinder.so is available in same folder of /proc/self/exe, under program's deps folder, and cwd
+
+        let self_file = Path::new("/proc/self/exe").canonicalize();
+        let libpath = match self_file {
+            Ok(self_file) => {
+                let libbinder = self_file.parent().unwrap().join("libbinder.so");
+                if !libbinder.exists() {
+                    let libbinder = self_file
+                        .parent()
+                        .unwrap()
+                        .join("deps")
+                        .join("libbinder.so");
+                    if !libbinder.exists() {
+                        None
+                    } else {
+                        Some(
+                            libbinder
+                                .canonicalize()
+                                .expect("Failed to canonicalize libbinder.so path"),
+                        )
+                    }
+                } else {
+                    Some(
+                        libbinder
+                            .canonicalize()
+                            .expect("Failed to canonicalize libbinder.so path"),
+                    )
+                }
+            }
+            Err(_) => None,
+        };
+        let libpath = match libpath {
+            Some(libpath) => libpath,
+            None => {
+                let cwd = std::env::current_dir().unwrap();
+                let libbinder = cwd.join("libbinder.so");
+                if !libbinder.exists() {
+                    panic!("libbinder.so not found. Please put it in same folder of admirror-speedtest or current working directory.");
+                }
+                libbinder
+                    .canonicalize()
+                    .expect("Failed to canonicalize libbinder.so path")
+            }
+        };
+        Some(libpath)
+    } else {
+        None
+    };
     // 3. run rsync for passes times and collect results
     for pass in 0..args.pass {
         println!("Pass {}:", pass);
@@ -242,9 +315,20 @@ fn main() {
                 // return instead of directly exit() so we can clean up tmp files
                 return;
             }
-            // create tmp file
-            let tmp_file = create_tmp(&args.tmp_dir);
-            let proc = get_child(&program, &ip.ip, &args.upstream, &tmp_file, &log);
+            // create tmp file or directory
+            let tmp_file = if program != Program::Git {
+                create_tmp_file(&args.tmp_dir)
+            } else {
+                create_tmp_dir(&args.tmp_dir)
+            };
+            let proc = get_child(
+                &program,
+                &ip.ip,
+                &args.upstream,
+                &tmp_file,
+                &log,
+                &binder_path,
+            );
             let rsync_status =
                 wait_timeout(proc, Duration::from_secs(args.timeout as u64), term.clone());
             let status = rsync_status.status;
@@ -271,7 +355,11 @@ fn main() {
                 state_str += " (terminated by user)";
             }
             // check file size
-            let size = tmp_file.metadata().unwrap().len();
+            let size = if program != Program::Git {
+                tmp_file.metadata().unwrap().len()
+            } else {
+                fs_extra::dir::get_size(&tmp_file).unwrap()
+            };
             let bandwidth = size as f64 / duration_seconds; // Bytes / Seconds
             let bandwidth = bandwidth / 1024_f64; // KB/s
             println!(

@@ -1,0 +1,17 @@
+[package]
+name = "binder"
+version = "0.1.0"
+edition = "2021"
+description = "Bind IP for arbitrary dynamic programs."
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+ctor = "0.2.0"
+lazy_static = "1.4.0"
+libc = "0.2.142"
+redhook = "2.0.0"
+
+[lib]
+name = "binder"
+crate_type = ["cdylib"]
