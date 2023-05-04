@@ -10,7 +10,7 @@ PS: There's a racing bug in rsync that prevents proper termination of rsync proc
 
 ```
 $ ./admirror-speedtest --help
-admirror-speedtest 0.3.0
+admirror-speedtest 0.3.3
 Test speed (bandwidth) of different bind IP to rsync, http(s) and git upstream. Alleviate mirror
 site admin's trouble choosing fastest bind IP.
 
@@ -32,6 +32,16 @@ OPTIONS:
         --tmp-dir <TMP_DIR>    Tmp file path. Default to env::temp_dir() (/tmp in Linux system)
     -V, --version              Print version information
 ```
+
+### Git support
+
+`libbinder.so` will be searched by this order:
+
+- Same path as admirror-speedtest executable
+- `deps` directory in admirror-speedtest executable's parent directory
+- Current working directory
+
+And throws error if not found.
 
 ## Config file format
 
