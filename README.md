@@ -41,7 +41,9 @@ OPTIONS:
 - `deps` directory in admirror-speedtest executable's parent directory
 - Current working directory
 
-And throws error if not found.
+Note that libbinder is now seperated to another repo: <https://github.com/taoky/libbinder>, with glibc & musl support.
+
+It throws error and git support will not be available if `libbinder.so` is not found.
 
 ## Config file format
 
