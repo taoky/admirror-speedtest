@@ -1,3 +1,0 @@
-[submodule "binder"]
-	path = binder
-	url = https://github.com/taoky/libbinder.git

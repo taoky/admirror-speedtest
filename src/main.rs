@@ -262,7 +262,7 @@ fn main() {
 
     let binder_path = if program == Program::Git {
         // Check if libbinder.so is available in same folder of /proc/self/exe, under program's deps folder, and cwd
-
+        const CANONICALIZE_ERR_MSG: &str = "Failed to canonicalize libbinder.so path";
         let self_file = Path::new("/proc/self/exe").canonicalize();
         let libpath = match self_file {
             Ok(self_file) => {
@@ -279,14 +279,14 @@ fn main() {
                         Some(
                             libbinder
                                 .canonicalize()
-                                .expect("Failed to canonicalize libbinder.so path"),
+                                .expect(CANONICALIZE_ERR_MSG),
                         )
                     }
                 } else {
                     Some(
                         libbinder
                             .canonicalize()
-                            .expect("Failed to canonicalize libbinder.so path"),
+                            .expect(CANONICALIZE_ERR_MSG),
                     )
                 }
             }
@@ -298,11 +298,12 @@ fn main() {
                 let cwd = std::env::current_dir().unwrap();
                 let libbinder = cwd.join("libbinder.so");
                 if !libbinder.exists() {
-                    panic!("libbinder.so not found. Please put it in same folder of admirror-speedtest or current working directory.");
+                    panic!(r#"libbinder.so not found. Please put it in same folder of admirror-speedtest or current working directory.
+You can download corresponding file from https://github.com/taoky/libbinder/releases"#);
                 }
                 libbinder
                     .canonicalize()
-                    .expect("Failed to canonicalize libbinder.so path")
+                    .expect(CANONICALIZE_ERR_MSG)
             }
         };
         Some(libpath)
