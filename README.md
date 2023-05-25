@@ -39,7 +39,6 @@ OPTIONS:
 
 - Same path as admirror-speedtest executable
 - `deps` directory in admirror-speedtest executable's parent directory
-- Current working directory
 
 Note that libbinder is now seperated to another repo: <https://github.com/taoky/libbinder>, with glibc & musl support.
 
