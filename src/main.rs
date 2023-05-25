@@ -261,7 +261,7 @@ fn main() {
     };
 
     let binder_path = if program == Program::Git {
-        // Check if libbinder.so is available in same folder of /proc/self/exe, under program's deps folder, and cwd
+        // Check if libbinder.so is available in same folder of /proc/self/exe, or under program's deps folder
         const CANONICALIZE_ERR_MSG: &str = "Failed to canonicalize libbinder.so path";
         let self_file = Path::new("/proc/self/exe").canonicalize();
         let libpath = match self_file {
@@ -276,18 +276,10 @@ fn main() {
                     if !libbinder.exists() {
                         None
                     } else {
-                        Some(
-                            libbinder
-                                .canonicalize()
-                                .expect(CANONICALIZE_ERR_MSG),
-                        )
+                        Some(libbinder.canonicalize().expect(CANONICALIZE_ERR_MSG))
                     }
                 } else {
-                    Some(
-                        libbinder
-                            .canonicalize()
-                            .expect(CANONICALIZE_ERR_MSG),
-                    )
+                    Some(libbinder.canonicalize().expect(CANONICALIZE_ERR_MSG))
                 }
             }
             Err(_) => None,
@@ -295,15 +287,10 @@ fn main() {
         let libpath = match libpath {
             Some(libpath) => libpath,
             None => {
-                let cwd = std::env::current_dir().unwrap();
-                let libbinder = cwd.join("libbinder.so");
-                if !libbinder.exists() {
-                    panic!(r#"libbinder.so not found. Please put it in same folder of admirror-speedtest or current working directory.
-You can download corresponding file from https://github.com/taoky/libbinder/releases"#);
-                }
-                libbinder
-                    .canonicalize()
-                    .expect(CANONICALIZE_ERR_MSG)
+                panic!(
+                    r#"libbinder.so not found. Please put it in same folder of admirror-speedtest.
+You can download corresponding file from https://github.com/taoky/libbinder/releases"#
+                );
             }
         };
         Some(libpath)
