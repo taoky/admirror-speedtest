@@ -25,8 +25,11 @@ pub fn get_child(
     tmp_path: &Path,
     log_file: &File,
     binder: &Option<PathBuf>,
+    extra: &Option<String>,
 ) -> ProgramChild {
     let tmp = tmp_path.as_os_str().to_string_lossy().to_string();
+    let extra = shlex::split(extra.as_ref().unwrap_or(&"".to_string()))
+        .expect("Failed to parse extra arguments");
     let mut cmd: Command;
     ProgramChild {
         child: match program {
@@ -38,6 +41,7 @@ pub fn get_child(
                     .arg(bind_ip)
                     .arg(upstream)
                     .arg(tmp)
+                    .args(extra)
             }
             Program::Curl => {
                 cmd = std::process::Command::new("curl");
@@ -46,6 +50,7 @@ pub fn get_child(
                     .arg("--interface")
                     .arg(bind_ip)
                     .arg(upstream)
+                    .args(extra)
             }
             Program::Wget => {
                 cmd = std::process::Command::new("wget");
@@ -54,6 +59,7 @@ pub fn get_child(
                     .arg("--bind-address")
                     .arg(bind_ip)
                     .arg(upstream)
+                    .args(extra)
             }
             Program::Git => {
                 cmd = std::process::Command::new("git");

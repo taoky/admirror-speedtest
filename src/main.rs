@@ -58,6 +58,10 @@ struct Args {
     /// Program to use. It will try to detect by default (here curl will be used default for http(s))
     #[clap(long, arg_enum)]
     program: Option<Program>,
+
+    /// Extra arguments. Will be given to specified program
+    #[clap(long)]
+    extra: Option<String>,
 }
 
 struct Ip {
@@ -129,12 +133,29 @@ fn kill_children(proc: &mut ProgramChild) -> ExitStatus {
         }
     }
 
-    let res = proc.child.wait().expect("program wait() failed");
+    // let res = proc.child.wait().expect("program wait() failed");
+    // Try waiting for 5 more seconds to let it cleanup
+    let mut res: Option<ExitStatus> = None;
+    for _ in 0..50 {
+        if let Some(status) = proc.child.try_wait().expect("try waiting for child process failed") {
+            res = Some(status);
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    if res.is_none() {
+        // Still not exited, kill it
+        println!("Killing {} with SIGKILL, as it is not exiting with SIGTERM.", get_program_name(&proc.program));
+        unsafe {
+            libc::kill(proc.child.id() as i32, SIGKILL);
+        }
+        res = Some(proc.child.wait().expect("program wait() failed"));
+    }
     // if receiver died before generator, the SIGCHLD handler of generator will help reap it
     // but we cannot rely on race condition to help do things right
     reap_all_children();
 
-    res
+    res.unwrap()
 }
 
 fn wait_timeout(mut proc: ProgramChild, timeout: Duration, term: Arc<AtomicBool>) -> ProgramStatus {
@@ -297,7 +318,7 @@ You can download corresponding file from https://github.com/taoky/libbinder/rele
     } else {
         None
     };
-    // 3. run rsync for passes times and collect results
+    // 3. run specific process for passes times and collect results
     for pass in 0..args.pass {
         println!("Pass {}:", pass);
         for ip in &ips {
@@ -319,11 +340,12 @@ You can download corresponding file from https://github.com/taoky/libbinder/rele
                 &tmp_file,
                 &log,
                 &binder_path,
+                &args.extra,
             );
-            let rsync_status =
+            let prog_status =
                 wait_timeout(proc, Duration::from_secs(args.timeout as u64), term.clone());
-            let status = rsync_status.status;
-            let duration = rsync_status.time;
+            let status = prog_status.status;
+            let duration = prog_status.time;
             let duration_seconds = duration.as_secs_f64();
             let mut state_str = {
                 if duration_seconds > args.timeout as f64 {
