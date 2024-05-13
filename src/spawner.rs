@@ -35,7 +35,8 @@ pub fn get_child(
         child: match program {
             Program::Rsync => {
                 cmd = std::process::Command::new("rsync");
-                cmd.arg("-avP")
+                cmd.arg("-vP")
+                    .arg("-rLptgoD")
                     .arg("--inplace")
                     .arg("--address")
                     .arg(bind_ip)

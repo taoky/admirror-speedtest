@@ -1,6 +1,6 @@
 [package]
 name = "admirror-speedtest"
-version = "0.3.5"
+version = "0.3.6"
 edition = "2021"
 description = "Test speed (bandwidth) of different bind IP to rsync, http(s) and git upstream. Alleviate mirror site admin's trouble choosing fastest bind IP."
 
