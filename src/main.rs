@@ -137,7 +137,11 @@ fn kill_children(proc: &mut ProgramChild) -> ExitStatus {
     // Try waiting for 5 more seconds to let it cleanup
     let mut res: Option<ExitStatus> = None;
     for _ in 0..50 {
-        if let Some(status) = proc.child.try_wait().expect("try waiting for child process failed") {
+        if let Some(status) = proc
+            .child
+            .try_wait()
+            .expect("try waiting for child process failed")
+        {
             res = Some(status);
             break;
         }
@@ -145,7 +149,10 @@ fn kill_children(proc: &mut ProgramChild) -> ExitStatus {
     }
     if res.is_none() {
         // Still not exited, kill it
-        println!("Killing {} with SIGKILL, as it is not exiting with SIGTERM.", get_program_name(&proc.program));
+        println!(
+            "Killing {} with SIGKILL, as it is not exiting with SIGTERM.",
+            get_program_name(&proc.program)
+        );
         unsafe {
             libc::kill(proc.child.id() as i32, SIGKILL);
         }
@@ -319,8 +326,10 @@ You can download corresponding file from https://github.com/taoky/libbinder/rele
         None
     };
     // 3. run specific process for passes times and collect results
+    let mut results: Vec<Vec<_>> = Vec::new();
     for pass in 0..args.pass {
         println!("Pass {}:", pass);
+        let mut results_pass: Vec<_> = Vec::new();
         for ip in &ips {
             if term.load(Ordering::SeqCst) {
                 println!("Terminated by user.");
@@ -379,6 +388,35 @@ You can download corresponding file from https://github.com/taoky/libbinder/rele
                 "{} ({}): {} KB/s ({})",
                 ip.ip, ip.comment, bandwidth, state_str
             );
+            results_pass.push(bandwidth);
         }
+        results.push(results_pass);
+    }
+
+    let mut calculated_results: Vec<_> = Vec::new();
+    for (i, ip) in ips.iter().enumerate() {
+        let mut sum = 0_f64;
+        let mut vmin = f64::MAX;
+        let mut vmax = f64::MIN;
+        for pass in &results {
+            let bandwidth = pass[i];
+            sum += bandwidth;
+            vmin = f64::min(vmin, bandwidth);
+            vmax = f64::max(vmax, bandwidth);
+        }
+        let res = if args.pass >= 3 {
+            // Remove min and max
+            sum -= vmin + vmax;
+            sum / (args.pass - 2) as f64
+        } else {
+            sum / args.pass as f64
+        };
+        calculated_results.push((ip.ip.clone(), ip.comment.clone(), res));
+    }
+
+    println!("Final Results (remove min and max if feasible, and take average):");
+    calculated_results.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap());
+    for (ip, comment, res) in calculated_results {
+        println!("{} ({}): {} KB/s", ip, comment, res);
     }
 }
