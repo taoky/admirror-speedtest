@@ -14,13 +14,13 @@ use std::{
     time::{Duration, Instant},
 };
 
-use clap::{clap_derive::ArgEnum, Parser};
+use clap::{ValueEnum, Parser};
 use libc::SIGKILL;
 use signal_hook::consts::{SIGINT, SIGTERM};
 
 use crate::spawner::{get_child, get_program_name};
 
-#[derive(Debug, ArgEnum, Clone, Copy, PartialEq)]
+#[derive(Debug, ValueEnum, Clone, Copy, PartialEq)]
 pub enum Program {
     Rsync,
     Wget,
@@ -56,11 +56,11 @@ struct Args {
     upstream: String,
 
     /// Program to use. It will try to detect by default (here curl will be used default for http(s))
-    #[clap(long, arg_enum)]
+    #[clap(long, value_enum)]
     program: Option<Program>,
 
     /// Extra arguments. Will be given to specified program
-    #[clap(long)]
+    #[clap(long, allow_hyphen_values=true)]
     extra: Option<String>,
 }
 
